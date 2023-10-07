@@ -9,13 +9,17 @@ from data import MovieLens1MColdStartDataLoader, TaobaoADColdStartDataLoader
 from model import FactorizationMachineModel, WideAndDeep, DeepFactorizationMachineModel, AdaptiveFactorizationNetwork, ProductNeuralNetworkModel
 from model import AttentionalFactorizationMachineModel, DeepCrossNetworkModel, MWUF, MetaE, CVAR
 from model.wd import WideAndDeep
+from model.cvaegan_c import CVAEGAN
+from model.gan import GAN
+from model.vqvae import VQVAE
+from model.dalle import DALLE
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--pretrain_model', default='')
+    parser.add_argument('--pretrain_model', default='deepfm')
     parser.add_argument('--dataset_name', default='movielens1M', help='required to be one of [movielens1M, taobaoAd]')
     parser.add_argument('--dataset_path', default='./datahub/movielens1M/ml-1M.pkl')
-    parser.add_argument('--warmup_model', default='cvar', help="required to be one of [base, mwuf, metaE, cvar]")
+    parser.add_argument('--warmup_model', default='dalle', help="required to be one of [base, mwuf, metaE, cvar, vqvae, dalle]")
     parser.add_argument('--is_dropoutnet', type=bool, default=False, help="whether to use dropout net for pretrain")
     parser.add_argument('--bsz', type=int, default=2048)
     parser.add_argument('--shuffle', type=int, default=1)
@@ -58,7 +62,7 @@ def get_model(name, dl):
         return DeepCrossNetworkModel(dl.description, embed_dim=16, num_layers=3, mlp_dims=[16, 16], dropout=0.2)
     return
 
-def test(model, data_loader, device):
+def auctest(model, data_loader, device):
     model.eval()
     labels, scores, predicts = list(), list(), list()
     criterion = torch.nn.BCELoss()
@@ -82,7 +86,7 @@ def dropoutNet_train(model, data_loader, device, epoch, lr, weight_decay, save_p
     for epoch_i in range(1, epoch + 1):
         epoch_loss = 0.0
         total_loss = 0
-        total_iters = len(data_loader) 
+        total_iters = len(data_loader)
         for i, (features, label) in enumerate(data_loader):
             if random.random() < 0.1:
                 bsz = label.shape[0]
@@ -104,7 +108,7 @@ def dropoutNet_train(model, data_loader, device, epoch, lr, weight_decay, save_p
                 total_loss = 0
 
         print("Epoch {}/{} loss: {:.4f}".format(epoch_i, epoch, epoch_loss/total_iters), " " * 20)
-    return 
+    return
 
 def train(model, data_loader, device, epoch, lr, weight_decay, save_path, log_interval=10, val_data_loader=None):
     # train
@@ -116,7 +120,7 @@ def train(model, data_loader, device, epoch, lr, weight_decay, save_path, log_in
     for epoch_i in range(1, epoch + 1):
         epoch_loss = 0.0
         total_loss = 0
-        total_iters = len(data_loader) 
+        total_iters = len(data_loader)
         for i, (features, label) in enumerate(data_loader):
             y = model(features)
             loss = criterion(y, label.float())
@@ -134,9 +138,9 @@ def train(model, data_loader, device, epoch, lr, weight_decay, save_path, log_in
         # if not early_stopper.is_continuable(model, auc):
         #     print('Best validation auc: {:.4f}'.format(early_stopper.best_accuracy))
         #     break
-    return 
+    return
 
-def pretrain(dataset_name, 
+def pretrain(dataset_name,
          dataset_path,
          bsz,
          shuffle,
@@ -183,7 +187,7 @@ def base(model,
     auc_list = []
     dataset_list = ['train_warm_a', 'train_warm_b', 'train_warm_c', 'test']
     for i, train_s in enumerate(dataset_list):
-        auc, f1 = test(model, dataloaders['test'], device)
+        auc, f1 = auctest(model, dataloaders['test'], device)
         auc_list.append(auc.item())
         print("[base model] evaluate on [test dataset] auc: {:.4f}, F1 socre: {:.4f}".format(auc, f1))
         if i < 3:
@@ -241,13 +245,13 @@ def metaE(model,
         warm_item_id_emb = metaE_model.warm_item_id(features)
         indexes = features[metaE_model.item_id_name].squeeze()
         origin_item_id_emb[indexes, ] = warm_item_id_emb
-    # test by steps 
+    # test by steps
     dataset_list = ['train_warm_a', 'train_warm_b', 'train_warm_c', 'test']
     auc_list = []
     for i, train_s in enumerate(dataset_list):
         print("#"*10, dataset_list[i],'#'*10)
         train_s = dataset_list[i]
-        auc, f1 = test(metaE_model.model, dataloaders['test'], device)
+        auc, f1 = auctest(metaE_model.model, dataloaders['test'], device)
         auc_list.append(auc.item())
         print("[metaE] evaluate on [test dataset] auc: {:.4f}, F1 score: {:.4f}".format(auc, f1))
         if i < len(dataset_list) - 1:
@@ -272,11 +276,11 @@ def mwuf(model,
     save_path = os.path.join(save_dir, 'model.pth')
     train_base = dataloaders['train_base']
     # train mwuf
-    mwuf_model = MWUF(model, 
+    mwuf_model = MWUF(model,
                       item_features=dataloaders.item_features,
                       train_loader=train_base,
                       device=device).to(device)
-    
+
     mwuf_model.init_meta()
     mwuf_model.train()
     criterion = torch.nn.BCELoss()
@@ -317,13 +321,13 @@ def mwuf(model,
         warm_item_id_emb = mwuf_model.warm_item_id(features)
         indexes = features[mwuf_model.item_id_name].squeeze()
         origin_item_id_emb[indexes, ] = warm_item_id_emb
-    # test by steps 
+    # test by steps
     dataset_list = ['train_warm_a', 'train_warm_b', 'train_warm_c', 'test']
     auc_list = []
     for i, train_s in enumerate(dataset_list):
         print("#"*10, dataset_list[i],'#'*10)
         train_s = dataset_list[i]
-        auc, f1 = test(mwuf_model.model, dataloaders['test'], device)
+        auc, f1 = auctest(mwuf_model.model, dataloaders['test'], device)
         auc_list.append(auc.item())
         print("[mwuf] evaluate on [test dataset] auc: {:.4f}, F1 score: {:.4f}".format(auc, f1))
         if i < len(dataset_list) - 1:
@@ -348,7 +352,7 @@ def cvar(model,
     save_path = os.path.join(save_dir, 'model.pth')
     train_base = dataloaders['train_base']
     # train cvar
-    warm_model = CVAR(model, 
+    warm_model = CVAR(model,
                     warm_features=dataloaders.item_features,
                     train_loader=train_base,
                     device=device).to(device)
@@ -374,24 +378,25 @@ def cvar(model,
                             loss.item(),  main_loss, recon_loss, reg_loss), end='\r')
             if logger:
                 print("{}/{}".format(e, epoch))
-    # replace item id embedding with warmed 
+
+    # replace item id embedding with warmed
     def warm(is_cold=False):
         train_a = dataloaders['train_warm_a']
         for (features, label) in train_a:
             origin_item_id_emb = warm_model.model.emb_layer[warm_model.item_id_name].weight.data
-            warm_item_id_emb = warm_model.warm_item_id_p(features, is_cold)
+            warm_item_id_emb = warm_model.warm_item_id_p(features)
             indexes = features[warm_model.item_id_name].squeeze()
             # origin_item_id_emb[indexes, ] = 0.5 * warm_item_id_emb + 0.5 * origin_item_id_emb[indexes, ]
             origin_item_id_emb[indexes, ] = warm_item_id_emb
     train_cvar(train_base, epoch=1, logger=True)
     warm(is_cold=True)
-    # test by steps 
+    # test by steps
     dataset_list = ['train_warm_a', 'train_warm_b', 'train_warm_c', 'test']
     auc_list = []
     for i, train_s in enumerate(dataset_list):
         print("#"*10, dataset_list[i],'#'*10)
         train_s = dataset_list[i]
-        auc, f1 = test(warm_model.model, dataloaders['test'], device)
+        auc, f1 = auctest(warm_model.model, dataloaders['test'], device)
         auc_list.append(auc.item())
         print("[cvar]] evaluate on [test dataset] auc: {:.4f}, F1 score: {:.4f}".format(auc, f1))
         if i < len(dataset_list) - 1:
@@ -402,15 +407,214 @@ def cvar(model,
     print("*"*20, "cvar", "*"*20)
     return auc_list
 
+
+
+def vqvae(model,
+          dataloaders,
+          model_name,
+          epoch,
+          lr,
+          weight_decay,
+          device,
+          save_dir):
+    print("*" * 20, "vqvae", "*" * 20)
+    device = torch.device(device)
+    save_dir = os.path.join(save_dir, model_name)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    save_path = os.path.join(save_dir, 'model.pth')
+    train_base = dataloaders['train_base']
+    # train vqvae
+    warm_model = VQVAE(model,
+                      warm_features=dataloaders.item_features,
+                      train_loader=train_base,
+                      device=device).to(device)
+    warm_model.init_vqvae()
+
+    def train_vae(dataloader, epoch=1, logger=False):
+        warm_model.train()
+        criterion = torch.nn.BCELoss()
+        warm_model.optimizer_vae()
+        optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, warm_model.parameters()), \
+                                                lr=lr, weight_decay=weight_decay)
+        total_iters = len(dataloader)
+        for e in range(epoch):
+            for i, (features, label) in enumerate(dataloader):
+                recon_loss, reg_loss, target, vq_loss, perplexity = warm_model(features)
+                main_loss = criterion(target, label.float())
+                loss = main_loss + recon_loss + reg_loss
+                warm_model.zero_grad()
+                loss.backward()
+                optimizer.step()
+                if (i + 1) % 10 == 0 and logger:
+                    print("    iters {}/{}, loss: {:.4f}, main loss: {:.4f}, recon loss: {:.4f}, reg loss: {:.4f}, vq loss: {:.4f}, perplexity: {:.4f}" \
+                            .format(i + 1, int(total_iters), \
+                            loss.item(),  main_loss, recon_loss, reg_loss, vq_loss, perplexity), end='\r')
+            if logger:
+                print("{}/{}".format(e, epoch))
+
+    def train_codebook(dataloader, epoch=1, logger=False):
+        warm_model.train()
+        criterion = torch.nn.BCELoss()
+        warm_model.optimizer_codebook()
+        optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, warm_model.parameters()), \
+                                                lr=lr, weight_decay=weight_decay)
+        total_iters = len(dataloader)
+        for e in range(epoch):
+            for i, (features, label) in enumerate(dataloader):
+                recon_loss, reg_loss, target, vq_loss, perplexity = warm_model(features)
+                main_loss = criterion(target, label.float())
+                loss = main_loss + recon_loss + reg_loss + vq_loss
+                warm_model.zero_grad()
+                loss.backward()
+                optimizer.step()
+                if (i + 1) % 10 == 0 and logger:
+                    print("    iters {}/{}, loss: {:.4f}, main loss: {:.4f}, recon loss: {:.4f}, reg loss: {:.4f}, vq loss: {:.4f}, perplexity: {:.4f}" \
+                            .format(i + 1, int(total_iters), \
+                            loss.item(),  main_loss, recon_loss, reg_loss, vq_loss, perplexity), end='\r')
+            if logger:
+                print("{}/{}".format(e, epoch))
+
+    # replace item id embedding with warmed
+    def warm(is_cold=False):
+        train_a = dataloaders['train_warm_a']
+        for (features, label) in train_a:
+            origin_item_id_emb = warm_model.model.emb_layer[warm_model.item_id_name].weight.data
+            warm_item_id_emb = warm_model.warm_item_id_p(features)
+            indexes = features[warm_model.item_id_name].squeeze()
+            # origin_item_id_emb[indexes, ] = 0.5 * warm_item_id_emb + 0.5 * origin_item_id_emb[indexes, ]
+            origin_item_id_emb[indexes, ] = warm_item_id_emb
+
+    train_vae(train_base, epoch=1, logger=True)
+    train_codebook(train_base, epoch=1, logger=True)
+    warm(is_cold=True)
+    # test by steps
+    dataset_list = ['train_warm_a', 'train_warm_b', 'train_warm_c', 'test']
+    auc_list = []
+    for i, train_s in enumerate(dataset_list):
+        print("#"*10, dataset_list[i],'#'*10)
+        train_s = dataset_list[i]
+        auc, f1 = auctest(warm_model.model, dataloaders['test'], device)
+        auc_list.append(auc.item())
+        print("[dalle]] evaluate on [test dataset] auc: {:.4f}, F1 score: {:.4f}".format(auc, f1))
+        if i < len(dataset_list) - 1:
+            warm_model.model.only_optimize_itemid()
+            train(warm_model.model, dataloaders[train_s], device, epoch, lr, weight_decay, save_path)
+            train_vae(dataloaders[train_s], epoch=2, logger=False)
+            warm()
+
+    print("*" * 20, "vqvae" + model_name, "*" * 20)
+    return auc_list
+
+def dalle(model,
+       dataloaders,
+       model_name,
+       epoch,
+       lr,
+       weight_decay,
+       device,
+       save_dir):
+    print("*"*20, "dalle", "*"*20)
+    device = torch.device(device)
+    save_dir = os.path.join(save_dir, model_name)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    save_path = os.path.join(save_dir, 'model.pth')
+    train_base = dataloaders['train_base']
+    # train dalle
+    warm_model = DALLE(model,
+                    warm_features=dataloaders.item_features,
+                    train_loader=train_base,
+                    device=device).to(device)
+    warm_model.init_dalle()
+    def train_vae(dataloader, epoch=1, logger=False):
+        warm_model.train()
+        criterion = torch.nn.BCELoss()
+        warm_model.optimizer_vae()
+        optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, warm_model.parameters()), \
+                                                lr=lr, weight_decay=weight_decay)
+        total_iters = len(dataloader)
+        for e in range(epoch):
+            for i, (features, label) in enumerate(dataloader):
+                recon_loss, reg_loss, target, vq_loss, perplexity = warm_model(features)
+                main_loss = criterion(target, label.float())
+                loss = main_loss + recon_loss + reg_loss
+                warm_model.zero_grad()
+                loss.backward()
+                optimizer.step()
+                if (i + 1) % 10 == 0 and logger:
+                    print("    iters {}/{}, loss: {:.4f}, main loss: {:.4f}, recon loss: {:.4f}, reg loss: {:.4f}, vq loss: {:.4f}, perplexity: {:.4f}" \
+                            .format(i + 1, int(total_iters), \
+                            loss.item(),  main_loss, recon_loss, reg_loss, vq_loss, perplexity), end='\r')
+            if logger:
+                print("{}/{}".format(e, epoch))
+
+    def train_codebook(dataloader, epoch=1, logger=False):
+        warm_model.train()
+        criterion = torch.nn.BCELoss()
+        warm_model.optimizer_codebook()
+        optimizer = torch.optim.Adam(params=filter(lambda p: p.requires_grad, warm_model.parameters()), \
+                                                lr=lr, weight_decay=weight_decay)
+        total_iters = len(dataloader)
+        for e in range(epoch):
+            for i, (features, label) in enumerate(dataloader):
+                recon_loss, reg_loss, target, vq_loss, perplexity = warm_model(features)
+                main_loss = criterion(target, label.float())
+                loss = main_loss + vq_loss + recon_loss + reg_loss
+                warm_model.zero_grad()
+                loss.backward()
+                optimizer.step()
+                if (i + 1) % 10 == 0 and logger:
+                    print("    iters {}/{}, loss: {:.4f}, main loss: {:.4f}, recon loss: {:.4f}, reg loss: {:.4f}, vq loss: {:.4f}, perplexity: {:.4f}" \
+                            .format(i + 1, int(total_iters), \
+                            loss.item(),  main_loss, recon_loss, reg_loss, vq_loss, perplexity), end='\r')
+            if logger:
+                print("{}/{}".format(e, epoch))
+
+    # replace item id embedding with warmed
+    def warm(is_cold=False):
+        train_a = dataloaders['train_warm_a']
+        for (features, label) in train_a:
+            origin_item_id_emb = warm_model.model.emb_layer[warm_model.item_id_name].weight.data
+            warm_item_id_emb = warm_model.warm_item_id_p(features)
+            indexes = features[warm_model.item_id_name].squeeze()
+            # origin_item_id_emb[indexes, ] = 0.5 * warm_item_id_emb + 0.5 * origin_item_id_emb[indexes, ]
+            origin_item_id_emb[indexes, ] = warm_item_id_emb
+
+    train_vae(train_base, epoch=1, logger=True)
+    train_codebook(train_base, epoch=1, logger=True)
+
+    warm(is_cold=True)
+    # test by steps
+    dataset_list = ['train_warm_a', 'train_warm_b', 'train_warm_c', 'test']
+    auc_list = []
+    for i, train_s in enumerate(dataset_list):
+        print("#"*10, dataset_list[i],'#'*10)
+        train_s = dataset_list[i]
+        auc, f1 = auctest(warm_model.model, dataloaders['test'], device)
+        auc_list.append(auc.item())
+        print("[dalle]] evaluate on [test dataset] auc: {:.4f}, F1 score: {:.4f}".format(auc, f1))
+        if i < len(dataset_list) - 1:
+            warm_model.model.only_optimize_itemid()
+            train(warm_model.model, dataloaders[train_s], device, epoch, lr, weight_decay, save_path)
+            train_vae(dataloaders[train_s], epoch=1, logger=False)
+            warm()
+    print("*"*20, "dalle", "*"*20)
+    return auc_list
+
 def run(model, dataloaders, args, model_name, warm):
     if warm == 'base':
         auc_list = base(model, dataloaders, model_name, args.epoch, args.lr, args.weight_decay, args.device, args.save_dir)
     elif warm == 'mwuf':
         auc_list = mwuf(model, dataloaders, model_name, args.epoch, args.lr, args.weight_decay, args.device, args.save_dir)
-    elif warm == 'metaE': 
+    elif warm == 'metaE':
         auc_list = metaE(model, dataloaders, model_name, args.epoch, args.lr, args.weight_decay, args.device, args.save_dir)
-    elif warm == 'cvar': 
+    elif warm == 'cvar':
         auc_list = cvar(model, dataloaders, model_name, args.epoch, args.lr, args.weight_decay, args.device, args.save_dir)
+    elif warm == 'dalle':
+        auc_list = dalle(model, dataloaders, model_name, args.epoch, args.lr, args.weight_decay, args.device, args.save_dir)
+    elif warm == 'vqvae':
+        auc_list = vqvae(model, dataloaders, model_name, args.epoch, args.lr, args.weight_decay, args.device, args.save_dir)
     return auc_list
 
 if __name__ == '__main__':
