@@ -22,7 +22,7 @@ class DALLE(nn.Module):
         self.emb_dim = 8
         self.num_heads = 4
         self.head_dim = self.emb_dim // self.num_heads
-
+        self.loop_number = 50
         assert self.head_dim * self.num_heads == self.emb_dim, "emb_dim must be divisible by num_heads"
 
         self.query_linear = nn.Linear(self.emb_dim, self.emb_dim)
@@ -44,39 +44,42 @@ class DALLE(nn.Module):
         output = torch.matmul(attention, value)
         return output, attention
 
-    def multi_head_attention(self, x, y ="self"):
+    def multi_head_attention(self, x, y="self", N=1):
         """
         Multi-head attention for input sequence.
 
         Args:
             x: input sequence tensor, shape [batch_size, seq_len, emb_dim].
-            mask: tensor with shape [batch_size, 1, seq_len] or [batch_size, seq_len, seq_len].
-            att_type: attention type, "self" or "target".
+            y: target sequence tensor, shape [batch_size, seq_len, emb_dim] or "self".
+            N: number of iterations to run the multi-head attention.
 
         Returns:
             output tensor, shape [batch_size, emb_dim].
         """
         batch_size = x.size(0)
-        if y == "self":
-            query = self.query_linear(x)
-            key = self.key_linear(x)
-            value = self.value_linear(x)
-        else:
-            q = x
-            k = y
-            v = y
-            query = self.query_linear(q)
-            key = self.key_linear(k)
-            value = self.value_linear(v)
 
-        query = query.view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        key = key.view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        value = value.view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        for _ in range(N):
+            if y == "self":
+                query = self.query_linear(x)
+                key = self.key_linear(x)
+                value = self.value_linear(x)
+            else:
+                query = x
+                key = y
+                value = y
+                query = self.query_linear(query)
+                key = self.key_linear(key)
+                value = self.value_linear(value)
 
-        output, attention = self.scaled_dot_product_attention(query, key, value)
-        output = output.permute(0, 2, 1, 3).contiguous().view(batch_size, -1, self.emb_dim)
-        output = self.fc_out(output)
-        output = output.sum(dim=1)
+            query = query.view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+            key = key.view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+            value = value.view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+
+            output, attention = self.scaled_dot_product_attention(query, key, value)
+            output = output.permute(0, 2, 1, 3).contiguous().view(batch_size, -1, self.emb_dim)
+
+            # Update input for the next iteration
+            x = output
 
         return output
 
@@ -206,11 +209,6 @@ class DALLE(nn.Module):
         commit_loss = torch.mean(torch.square(z_flat.detach() - z_q))
         vq_loss += self.commitment_cost * commit_loss
 
-        # Add codebook distance loss
-        # codebook_distances = torch.pdist(self.codebook)
-        # codebook_distance_loss = -torch.sum(codebook_distances)/2000
-        # vq_loss += self.distance_weight * codebook_distance_loss
-
         # Apply the Straight-Through Estimator (STE) trick
         z_q = z + (z_q - z).detach()
 
@@ -258,7 +256,9 @@ class DALLE(nn.Module):
 
         codebook_expanded = self.codebook.unsqueeze(0).expand(z_p.size(0), -1, -1)
         concatenated = torch.cat([z_p.unsqueeze(1), codebook_expanded], dim=1)
-        pred = self.multi_head_attention(z_p.unsqueeze(1), codebook_expanded)
+        pred = self.multi_head_attention(concatenated, 'self', self.loop_number)
+        pred = self.fc_out(pred)
+        pred = pred.sum(dim=1)
         return pred, reg_term, vq_loss, perplexity, recon_loss
 
     def warm_item_id_p(self, x_dict):
@@ -287,7 +287,9 @@ class DALLE(nn.Module):
         # pred = self.decoder(torch.concat([z_q, freq], 1))
         codebook_expanded = self.codebook.unsqueeze(0).expand(z_p.size(0), -1, -1)
         concatenated = torch.cat([z_p.unsqueeze(1), codebook_expanded], dim=1)
-        pred = self.multi_head_attention(z_p.unsqueeze(1), codebook_expanded)
+        pred = self.multi_head_attention(concatenated, 'self', self.loop_number)
+        pred = self.fc_out(pred)
+        pred = pred.sum(dim=1)
         return pred
 
 
