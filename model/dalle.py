@@ -267,7 +267,7 @@ class DALLE(nn.Module):
         z_p = torch.matmul(z_p, z_p.transpose(1, 2))
         # z_p = torch.sqrt(z_p)
         concatenated = torch.cat([z_p, codebook_expanded], dim=1)
-        pred = self.multi_head_attention(concatenated, 'self', self.loop_number)
+        pred = self.multi_head_attention(z_p, codebook_expanded, self.loop_number)
         pred = pred.sum(dim=1)
         pred = self.fc_out(pred)
         return pred, reg_term, vq_loss, perplexity, recon_loss
@@ -301,7 +301,7 @@ class DALLE(nn.Module):
         z_p = torch.matmul(z_p, z_p.transpose(1, 2))
         # z_p = torch.sqrt(z_p)
         concatenated = torch.cat([z_p, codebook_expanded], dim=1)
-        pred = self.multi_head_attention(concatenated, 'self', self.loop_number)
+        pred = self.multi_head_attention(z_p, codebook_expanded, self.loop_number)
         pred = pred.sum(dim=1)
         pred = self.fc_out(pred)
 
