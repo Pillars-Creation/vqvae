@@ -598,7 +598,7 @@ def dalle(model,
         if i < len(dataset_list) - 1:
             warm_model.model.only_optimize_itemid()
             train(warm_model.model, dataloaders[train_s], device, epoch, lr, weight_decay, save_path)
-            train_vae(dataloaders[train_s], epoch=1, logger=False)
+            train_vae(dataloaders[train_s], epoch=3, logger=False)
             warm()
     print("*"*20, "dalle", "*"*20)
     return auc_list
