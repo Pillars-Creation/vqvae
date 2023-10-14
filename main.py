@@ -19,7 +19,7 @@ def get_args():
     parser.add_argument('--pretrain_model', default='deepfm')
     parser.add_argument('--dataset_name', default='movielens1M', help='required to be one of [movielens1M, taobaoAd]')
     parser.add_argument('--dataset_path', default='./datahub/movielens1M/ml-1M.pkl')
-    parser.add_argument('--warmup_model', default='dalle', help="required to be one of [base, mwuf, metaE, cvar, vqvae, dalle]")
+    parser.add_argument('--warmup_model', default='vqvae', help="required to be one of [base, mwuf, metaE, cvar, vqvae, dalle]")
     parser.add_argument('--is_dropoutnet', type=bool, default=False, help="whether to use dropout net for pretrain")
     parser.add_argument('--bsz', type=int, default=2048)
     parser.add_argument('--shuffle', type=int, default=1)
@@ -501,6 +501,7 @@ def vqvae(model,
             warm_model.model.only_optimize_itemid()
             train(warm_model.model, dataloaders[train_s], device, epoch, lr, weight_decay, save_path)
             train_vae(dataloaders[train_s], epoch=2, logger=False)
+            train_codebook(train_base, epoch=1, logger=True)
             warm()
 
     print("*" * 20, "vqvae" + model_name, "*" * 20)

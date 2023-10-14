@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
+
 
 class VQVAE(nn.Module):
     def __init__(self,
@@ -16,55 +18,6 @@ class VQVAE(nn.Module):
         self.codebook = nn.Parameter(torch.randn(self.codebook_size, self.codebook_dim))
         self.commitment_cost = 0.25
         self.build(model, warm_features, train_loader, device, item_id_name, emb_dim)
-        return
-
-    def wasserstein(self, mean1, log_v1, mean2, log_v2):
-        p1 = torch.sum(torch.pow(mean1 - mean2, 2), 1)
-        p2 = torch.sum(torch.pow(torch.sqrt(torch.exp(log_v1)) - torch.sqrt(torch.exp(log_v2)), 2), 1)
-        return torch.sum(p1 + p2)
-
-    def init_all(self):
-        for name, param in self.named_parameters():
-            torch.nn.init.uniform_(param, -0.01, 0.01)
-
-    def optimize_all(self):
-        for name, param in self.named_parameters():
-            param.requires_grad_(True)
-        return
-
-    def init_vqvae(self):
-        for name, param in self.named_parameters():
-            if ('encoder') in name or ('decoder' in name) or ('codebook' in name):
-                torch.nn.init.uniform_(param, -0.01, 0.01)
-
-    def optimizer_vqvae(self):
-        for name, param in self.named_parameters():
-            if ('encoder' in name) or ('decoder' in name) or ('codebook' in name):
-                param.requires_grad_(True)
-            else:
-                param.requires_grad_(False)
-            for item_f in self.item_features:
-                if item_f in name:
-                    param.requires_grad_(True)
-        return
-
-    def optimizer_vae(self):
-        for name, param in self.named_parameters():
-            if ('encoder' in name) or ('decoder' in name) :
-                param.requires_grad_(True)
-            else:
-                param.requires_grad_(False)
-            for item_f in self.item_features:
-                if item_f in name:
-                    param.requires_grad_(True)
-        return
-
-    def optimizer_codebook(self):
-        for name, param in self.named_parameters():
-            if ('codebook' in name):
-                param.requires_grad_(True)
-            else:
-                param.requires_grad_(False)
         return
 
     def build(self,
@@ -124,23 +77,80 @@ class VQVAE(nn.Module):
         )
         return
 
+    def wasserstein(self, mean1, log_v1, mean2, log_v2):
+        p1 = torch.sum(torch.pow(mean1 - mean2, 2), 1)
+        p2 = torch.sum(torch.pow(torch.sqrt(torch.exp(log_v1)) - torch.sqrt(torch.exp(log_v2)), 2), 1)
+        return torch.sum(p1 + p2)
+
+    def init_all(self):
+        for name, param in self.named_parameters():
+            torch.nn.init.uniform_(param, -0.01, 0.01)
+
+    def optimize_all(self):
+        for name, param in self.named_parameters():
+            param.requires_grad_(True)
+        return
+
+    def init_vqvae(self):
+        for name, param in self.named_parameters():
+            if ('encoder') in name or ('decoder' in name) or ('codebook' in name):
+                torch.nn.init.uniform_(param, -0.01, 0.01)
+
+    def optimizer_vqvae(self):
+        for name, param in self.named_parameters():
+            if ('encoder' in name) or ('decoder' in name) or ('codebook' in name):
+                param.requires_grad_(True)
+            else:
+                param.requires_grad_(False)
+            for item_f in self.item_features:
+                if item_f in name:
+                    param.requires_grad_(True)
+        return
+
+    def optimizer_vae(self):
+        for name, param in self.named_parameters():
+            if ('encoder' in name) or ('decoder' in name) :
+                param.requires_grad_(True)
+            else:
+                param.requires_grad_(False)
+            for item_f in self.item_features:
+                if item_f in name:
+                    param.requires_grad_(True)
+        return
+
+    def optimizer_codebook(self):
+        for name, param in self.named_parameters():
+            if ('codebook' in name):
+                param.requires_grad_(True)
+            else:
+                param.requires_grad_(False)
+        return
+
     def vector_quantizer(self, z):
-        # 将z的形状更改为[batch_size, embedding_dim]
-        z_flat = z.view(-1, self.codebook_dim)
+        # 将 z 的形状更改为 [batch_size, embedding_dim, 1]
+        z_flat = z.view(-1, self.codebook_dim, 1)
+
+        # 计算 z_flat 两两相乘的结果
+        z_flat = torch.matmul(z_flat, z_flat.transpose(1, 2))
+        z_flat = torch.sqrt(z_flat)
 
         # 计算z_flat中每个潜在向量与码本中所有向量之间的欧几里得距离
         distances = torch.cdist(z_flat, self.codebook)
 
         # 计算与每个潜在向量z最接近的码本向量的索引
-        codebook_indices = torch.argmin(distances, dim=1)
+        codebook_indices = torch.argmin(distances, dim=-1)
 
         # 使用codebook_indices从码本中检索与原始潜在向量z最接近的离散潜在向量z_q
         one_hot = F.one_hot(codebook_indices, self.codebook_size).type(z_flat.dtype)
         z_q = torch.matmul(one_hot, self.codebook)
 
+        # 提取 z_q 的对角线元素并将它们相加以还原为形状为 [batch_size, emb] 的张量
+        z_q = torch.diagonal(z_q, dim1=1, dim2=2)
+
+
         # 计算VQ损失，vq_loss为标量
-        vq_loss = torch.mean(torch.square(z_q.detach() - z_flat))
-        commit_loss = torch.mean(torch.square(z_flat.detach() - z_q))
+        vq_loss = torch.mean(torch.square(z_q.detach() - z))
+        commit_loss = torch.mean(torch.square(z.detach() - z_q))
         vq_loss += self.commitment_cost * commit_loss
 
         # Apply the Straight-Through Estimator (STE) trick
@@ -209,7 +219,7 @@ class VQVAE(nn.Module):
         log_v_p = self.log_v_encoder_p(sideinfo_emb)
         z = mean_p + torch.exp(log_v_p * 0.5) * torch.randn(mean_p.size()).to(self.device)
         z_q , vq_loss, perplexity = self.vector_quantizer(z)
-        pred = self.decoder(torch.concat([z, freq], 1))
+        pred = self.decoder(torch.concat([z_q, freq], 1))
         return pred
 
 

@@ -22,7 +22,7 @@ class DALLE(nn.Module):
         self.emb_dim = 8
         self.num_heads = 4
         self.head_dim = self.emb_dim // self.num_heads
-        self.loop_number = 50
+        self.loop_number = 1
         assert self.head_dim * self.num_heads == self.emb_dim, "emb_dim must be divisible by num_heads"
 
         self.query_linear = nn.Linear(self.emb_dim, self.emb_dim)
@@ -172,7 +172,7 @@ class DALLE(nn.Module):
 
     def optimizer_vae(self):
         for name, param in self.named_parameters():
-            if ('encoder' in name) or ('decoder' in name) or ('query_linear' in name) or ('codebook' in name) \
+            if ('encoder' in name) or ('decoder' in name) or ('query_linear' in name) \
                     or ('key_linear' in name) or ('value_linear' in name) or ('fc_out' in name) :
                 param.requires_grad_(True)
             else:
@@ -191,22 +191,30 @@ class DALLE(nn.Module):
         return
 
     def vector_quantizer(self, z):
-        # 将z的形状更改为[batch_size, embedding_dim]
-        z_flat = z.view(-1, self.codebook_dim)
+        # 将 z 的形状更改为 [batch_size, embedding_dim, 1]
+        z_flat = z.view(-1, self.codebook_dim, 1)
+
+        # 计算 z_flat 两两相乘的结果
+        z_flat = torch.matmul(z_flat, z_flat.transpose(1, 2))
+        z_flat = torch.sqrt(z_flat)
 
         # 计算z_flat中每个潜在向量与码本中所有向量之间的欧几里得距离
         distances = torch.cdist(z_flat, self.codebook)
 
         # 计算与每个潜在向量z最接近的码本向量的索引
-        codebook_indices = torch.argmin(distances, dim=1)
+        codebook_indices = torch.argmin(distances, dim=-1)
 
         # 使用codebook_indices从码本中检索与原始潜在向量z最接近的离散潜在向量z_q
         one_hot = F.one_hot(codebook_indices, self.codebook_size).type(z_flat.dtype)
         z_q = torch.matmul(one_hot, self.codebook)
 
+        # 提取 z_q 的对角线元素并将它们相加以还原为形状为 [batch_size, emb] 的张量
+        z_q = torch.diagonal(z_q, dim1=1, dim2=2)
+
+
         # 计算VQ损失，vq_loss为标量
-        vq_loss = torch.mean(torch.square(z_q.detach() - z_flat))
-        commit_loss = torch.mean(torch.square(z_flat.detach() - z_q))
+        vq_loss = torch.mean(torch.square(z_q.detach() - z))
+        commit_loss = torch.mean(torch.square(z.detach() - z_q))
         vq_loss += self.commitment_cost * commit_loss
 
         # Apply the Straight-Through Estimator (STE) trick
@@ -257,8 +265,8 @@ class DALLE(nn.Module):
         codebook_expanded = self.codebook.unsqueeze(0).expand(z_p.size(0), -1, -1)
         concatenated = torch.cat([z_p.unsqueeze(1), codebook_expanded], dim=1)
         pred = self.multi_head_attention(concatenated, 'self', self.loop_number)
-        pred = self.fc_out(pred)
         pred = pred.sum(dim=1)
+        pred = self.fc_out(pred)
         return pred, reg_term, vq_loss, perplexity, recon_loss
 
     def warm_item_id_p(self, x_dict):
@@ -288,8 +296,9 @@ class DALLE(nn.Module):
         codebook_expanded = self.codebook.unsqueeze(0).expand(z_p.size(0), -1, -1)
         concatenated = torch.cat([z_p.unsqueeze(1), codebook_expanded], dim=1)
         pred = self.multi_head_attention(concatenated, 'self', self.loop_number)
-        pred = self.fc_out(pred)
         pred = pred.sum(dim=1)
+        pred = self.fc_out(pred)
+
         return pred
 
 
