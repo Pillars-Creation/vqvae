@@ -18,7 +18,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--pretrain_model', default='deepfm')
     parser.add_argument('--dataset_name', default='movielens1M', help='required to be one of [movielens1M, taobaoAd]')
-    parser.add_argument('--dataset_path', default='./datahub/movielens1M/ml-1M.pkl')
+    parser.add_argument('--dataset_path', default='./datahub/movielens1M/movielens1M_data.pkl')
     parser.add_argument('--warmup_model', default='vqvae', help="required to be one of [base, mwuf, metaE, cvar, vqvae, dalle]")
     parser.add_argument('--is_dropoutnet', type=bool, default=False, help="whether to use dropout net for pretrain")
     parser.add_argument('--bsz', type=int, default=2048)
